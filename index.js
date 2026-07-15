@@ -17,6 +17,11 @@ const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET;
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY;
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 
+// [مسار جديد]: للتأكد من أن السيرفر يعمل ومنعه من النوم
+app.get("/ping", (req, res) => {
+    res.send("pong");
+});
+
 // [ENDPOINT 1]: Agora Token
 app.get("/token", (req, res) => {
     const channelName = req.query.channel;
