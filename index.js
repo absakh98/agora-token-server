@@ -1,5 +1,5 @@
 // ==========================================
-// Baytna Render Backend Server - ULTIMATE FULL VERSION
+// Baytna Render Backend Server - ULTIMATE & FIXED VERSION
 // ==========================================
 
 const express = require("express");
@@ -45,11 +45,12 @@ const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 // ===============================
 
 function calculateLevel(points) {
-    if (points < 100) return 1;
-    if (points < 300) return 2;
-    if (points < 600) return 3;
-    if (points < 1000) return 4;
-    return 4 + Math.floor((points - 1000) / 500) + 1;
+    const p = Number(points);
+    if (p < 100) return 1;
+    if (p < 300) return 2;
+    if (p < 600) return 3;
+    if (p < 1000) return 4;
+    return 4 + Math.floor((p - 1000) / 500) + 1;
 }
 
 function getWeekNumber(d) {
@@ -116,7 +117,7 @@ app.post("/get-cloudinary-signature", (req, res) => {
 });
 
 // ===============================
-// 2. Points System
+// 2. Points System (Stats, Add, Deduct)
 // ===============================
 
 app.get("/api/stats/points", async (req, res) => {
@@ -125,7 +126,7 @@ app.get("/api/stats/points", async (req, res) => {
         let stats = { totalPoints: 0, totalUsers: 0, maxStreak: 0, topUser: "N/A", maxPoints: -1 };
         snapshot.forEach(doc => {
             const data = doc.data();
-            const p = data.points || 0;
+            const p = Number(data.points) || 0;
             stats.totalPoints += p;
             stats.totalUsers++;
             if (p > stats.maxPoints) { stats.maxPoints = p; stats.topUser = data.name || "مستخدم"; }
@@ -137,21 +138,22 @@ app.get("/api/stats/points", async (req, res) => {
 
 app.post("/api/points/add", async(req,res)=>{
     const { userId, points, actionType, description, source } = req.body;
+    const pToAdd = Number(points);
     try {
         await db.runTransaction(async(t)=>{
             const userRef = db.collection("users").doc(userId);
             const userSnap = await t.get(userRef);
             if(!userSnap.exists) throw new Error("المستخدم غير موجود");
             const data = userSnap.data();
-            const newTotal = (data.points || 0) + points;
+            const newTotal = (Number(data.points) || 0) + pToAdd;
             t.update(userRef, {
                 points: newTotal,
-                weeklyPoints: (data.weeklyPoints || 0) + points,
-                monthlyPoints: (data.monthlyPoints || 0) + points,
+                weeklyPoints: (Number(data.weeklyPoints) || 0) + pToAdd,
+                monthlyPoints: (Number(data.monthlyPoints) || 0) + pToAdd,
                 level: calculateLevel(newTotal)
             });
             const logRef = db.collection("points_logs").doc();
-            t.set(logRef, { logId: logRef.id, userId, userName: data.name || "مستخدم", points, actionType, description, timestamp: Date.now(), source: source || "server" });
+            t.set(logRef, { logId: logRef.id, userId, userName: data.name || "مستخدم", points: pToAdd, actionType, description, timestamp: Date.now(), source: source || "server" });
         });
         res.json({ success:true });
     } catch(error){ res.status(500).json({ error:error.message }); }
@@ -159,22 +161,23 @@ app.post("/api/points/add", async(req,res)=>{
 
 app.post("/api/points/deduct", async(req,res)=>{
     const { userId, reason, points, adminName } = req.body;
+    const pToSub = Number(points);
     try {
         await db.runTransaction(async(t)=>{
             const userRef = db.collection("users").doc(userId);
             const userSnap = await t.get(userRef);
             const data = userSnap.data();
-            const newTotal = Math.max(0, (data.points || 0) - points);
+            const newTotal = Math.max(0, (Number(data.points) || 0) - pToSub);
             t.update(userRef, { points: newTotal, level: calculateLevel(newTotal) });
             const logRef = db.collection("points_logs").doc();
-            t.set(logRef, { logId: logRef.id, userId, points: -points, actionType: "manual_deduction", description: `خصم: ${reason}`, timestamp: Date.now(), source: "admin" });
+            t.set(logRef, { logId: logRef.id, userId, points: -pToSub, actionType: "manual_deduction", description: `خصم من ${adminName || 'الإدارة'}: ${reason}`, timestamp: Date.now(), source: "admin" });
         });
         res.json({ success: true });
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===============================
-// 3. Challenges System
+// 3. Challenges System (Sync, Update, Approve, Reject)
 // ===============================
 
 const CHALLENGES_DATA = [
@@ -191,10 +194,18 @@ app.get("/api/challenges/sync", async (req, res) => {
         const start = new Date(now.getFullYear(), 0, 0);
         const dayOfYear = Math.floor((now - start) / 86400000);
         let cycleKey = type === "DAILY" ? now.getFullYear() * 1000 + dayOfYear : now.getFullYear() * 100 + now.getMonth();
+        
         const docId = `user_${userId}_${type}_cycle_${cycleKey}`;
         const progSnap = await db.collection("challenge_progress").doc(docId).get();
-        if (progSnap.exists) res.json({ progress: progSnap.data() });
-        else res.status(404).json({ error: "لا يوجد تحدي حالي" });
+        
+        // جلب نص التحدي من CHALLENGES_DATA لضمان العرض
+        if (progSnap.exists) {
+            const progress = progSnap.data();
+            const challenge = CHALLENGES_DATA.find(c => c.id === progress.challengeId) || CHALLENGES_DATA[0];
+            res.json({ challenge, progress });
+        } else {
+            res.status(404).json({ error: "لا يوجد تحدي حالي لهذه الدورة" });
+        }
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -214,12 +225,14 @@ app.post("/api/challenges/update-all", async(req,res)=>{
                 const dayOfYear = Math.floor((now - start) / 86400000);
                 let cycleKey = type === "DAILY" ? now.getFullYear() * 1000 + dayOfYear : now.getFullYear() * 100 + now.getMonth();
                 const docId = `user_${userDoc.id}_${type}_cycle_${cycleKey}`;
+                
                 batch.set(db.collection("challenge_progress").doc(docId), {
                     id: docId, userId: userDoc.id, challengeId: challenge.id,
                     challengeText: challenge.text, type, status: "pending",
-                    pointsEarned: challenge.points, pointsGranted: false,
+                    cycleKey: cycleKey, pointsEarned: challenge.points, pointsGranted: false,
                     requiresPhoto: challenge.requiresPhoto || false, timestamp: Date.now()
                 }, { merge:true });
+                
                 operations++; total++;
                 if(operations >= 400){ await batch.commit(); batch = db.batch(); operations = 0; }
             }
@@ -231,6 +244,7 @@ app.post("/api/challenges/update-all", async(req,res)=>{
 
 app.post("/api/challenges/approve", async(req,res)=>{
     const { progressId, userId, points } = req.body;
+    const pts = Number(points);
     try {
         await db.runTransaction(async(t)=>{
             const progRef = db.collection("challenge_progress").doc(progressId);
@@ -238,11 +252,11 @@ app.post("/api/challenges/approve", async(req,res)=>{
             const [pSnap, uSnap] = await Promise.all([t.get(progRef), t.get(userRef)]);
             if(!pSnap.exists || !uSnap.exists) throw new Error("بيانات ناقصة");
             if(pSnap.data().pointsGranted) throw new Error("النقاط منحت مسبقاً");
-            const newTotal = (uSnap.data().points || 0) + points;
-            t.update(userRef, { points: newTotal, level: calculateLevel(newTotal) });
+            const newTotal = (Number(uSnap.data().points) || 0) + pts;
+            t.update(userRef, { points: newTotal, level: calculateLevel(newTotal), weeklyPoints: (Number(uSnap.data().weeklyPoints) || 0) + pts });
             t.update(progRef, { status: "completed", pointsGranted: true, completionTime: Date.now() });
             const logRef = db.collection("points_logs").doc();
-            t.set(logRef, { logId: logRef.id, userId, points, actionType: "challenge_reward", description: `إكمال تحدي ${pSnap.data().challengeId}`, timestamp: Date.now(), source: "server" });
+            t.set(logRef, { logId: logRef.id, userId, points: pts, actionType: "challenge_reward", description: `إكمال تحدي ${pSnap.data().challengeId}`, timestamp: Date.now(), source: "server" });
         });
         res.json({ success:true });
     } catch(error){ res.status(500).json({ error:error.message }); }
@@ -256,6 +270,19 @@ app.post("/api/challenges/reject", async(req,res)=>{
         });
         res.json({ success: true });
     } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/challenges/pending-with-users", async(req,res)=>{
+    try {
+        const snapshot = await db.collection("challenge_progress").where("status", "==", "pending_approval").get();
+        const userIds = [...new Set(snapshot.docs.map(d => d.data().userId))];
+        const usersMap = {};
+        if (userIds.length > 0) {
+            const usersSnap = await db.collection("users").where(admin.firestore.FieldPath.documentId(), 'in', userIds.slice(0, 30)).get();
+            usersSnap.forEach(u => usersMap[u.id] = u.data());
+        }
+        res.json(snapshot.docs.map(doc => ({ progress: { id: doc.id, ...doc.data() }, user: usersMap[doc.data().userId] || null })));
+    } catch (e) { res.status(500).send(e.message); }
 });
 
 // ===============================
@@ -272,9 +299,9 @@ app.post("/api/user/daily-login", async(req,res)=>{
             const userData = userSnap.data();
             const today = new Date().setHours(0, 0, 0, 0);
             const lastLogin = new Date(userData.lastLoginDate || 0).setHours(0, 0, 0, 0);
-            if(today === lastLogin) return { isNewDay:false, totalPoints: userData.points || 0 };
+            if(today === lastLogin) return { isNewDay:false, totalPoints: Number(userData.points) || 0 };
             const streak = (today - lastLogin <= 86400000 + 1000) ? (userData.streakCount || 0)+1 : 1;
-            const points = 5; const newTotal = (userData.points || 0) + points;
+            const points = 5; const newTotal = (Number(userData.points) || 0) + points;
             t.update(userRef, { points: newTotal, streakCount: streak, lastLoginDate: Date.now(), level: calculateLevel(newTotal) });
             const logRef = db.collection("points_logs").doc();
             t.set(logRef, { logId: logRef.id, userId, points, actionType: "daily_login", description: `تسجيل دخول يومي - ${streak} يوم`, timestamp: Date.now(), source: "server" });
@@ -293,7 +320,7 @@ app.post("/api/rewards/open-box", async(req,res)=>{
         await db.runTransaction(async(t)=>{
             const userRef = db.collection("users").doc(userId);
             const uSnap = await t.get(userRef);
-            const total = (uSnap.data().points || 0) + points;
+            const total = (Number(uSnap.data().points) || 0) + points;
             t.update(userRef, { points: total, level: calculateLevel(total) });
             const logRef = db.collection("points_logs").doc();
             t.set(logRef, { logId: logRef.id, userId, points, actionType: "box_reward", description: `جائزة صندوق ${boxType}`, timestamp: Date.now(), source: "server" });
@@ -303,7 +330,40 @@ app.post("/api/rewards/open-box", async(req,res)=>{
 });
 
 // ===============================
-// 5. Advanced Admin & System
+// 5. Store & Management
+// ===============================
+
+app.post("/api/store/purchase", async(req,res)=>{
+    const { userId, itemId } = req.body;
+    try {
+        const result = await db.runTransaction(async(t)=>{
+            const userRef = db.collection("users").doc(userId);
+            const itemRef = db.collection("store_items").doc(itemId);
+            const [uSnap, iSnap] = await Promise.all([t.get(userRef), t.get(itemRef)]);
+            if(!uSnap.exists || !iSnap.exists) throw new Error("بيانات غير موجودة");
+            const price = Number(iSnap.data().price);
+            if(Number(uSnap.data().points) < price) throw new Error("نقاط غير كافية");
+            const newOwned = [...(uSnap.data().ownedItems || []), itemId];
+            t.update(userRef, { points: Number(uSnap.data().points) - price, ownedItems: newOwned });
+            const pRef = db.collection("store_purchases").doc();
+            t.set(pRef, { userId, itemId, itemName: iSnap.data().name, price: price, timestamp: Date.now() });
+            return { message: "تم الشراء بنجاح" };
+        });
+        res.json(result);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/store/toggle-activation", async (req, res) => {
+    const { userId, itemId, itemType, isActive } = req.body;
+    try {
+        const fieldMap = { "badge": "activeBadge", "frame": "activeFrame", "color": "activeProfileColor", "title": "activeTitle" };
+        await db.collection("users").doc(userId).update({ [fieldMap[itemType]]: isActive ? itemId : "none" });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 6. Notifications & System
 // ===============================
 
 app.post("/api/notifications/send-bulk", async (req, res) => {
@@ -351,10 +411,6 @@ app.get("/api/admin/logs", async (req, res) => {
     } catch (e) { res.status(500).send(e.message); }
 });
 
-// ===============================
-// 6. Store & Leaderboard
-// ===============================
-
 app.get("/api/leaderboard", async (req,res)=>{
     const { type="general", limit=50 } = req.query;
     let field = type === "weekly" ? "weeklyPoints" : type === "monthly" ? "monthlyPoints" : "points";
@@ -362,23 +418,6 @@ app.get("/api/leaderboard", async (req,res)=>{
         const snapshot = await db.collection("users").where("isAdmin", "==", false).where("isHiddenFromLeaderboard", "==", false).orderBy(field, "desc").limit(Number(limit)).get();
         res.json(snapshot.docs.map(doc=>({ userId: doc.id, ...doc.data() })));
     } catch(error){ res.status(500).send(error.message); }
-});
-
-app.post("/api/store/purchase", async(req,res)=>{
-    const { userId, itemId } = req.body;
-    try {
-        const result = await db.runTransaction(async(t)=>{
-            const userRef = db.collection("users").doc(userId);
-            const itemRef = db.collection("store_items").doc(itemId);
-            const [uSnap, iSnap] = await Promise.all([t.get(userRef), t.get(itemRef)]);
-            if(!uSnap.exists || !iSnap.exists) throw new Error("بيانات غير موجودة");
-            if(uSnap.data().points < iSnap.data().price) throw new Error("نقاط غير كافية");
-            const newOwned = [...(uSnap.data().ownedItems || []), itemId];
-            t.update(userRef, { points: uSnap.data().points - iSnap.data().price, ownedItems: newOwned });
-            return { message: "تم الشراء بنجاح" };
-        });
-        res.json(result);
-    } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===============================
