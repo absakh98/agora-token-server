@@ -14,19 +14,30 @@ app.use(cors());
 app.use(express.json());
 
 // ===============================
-// Firebase Admin Setup
+// Firebase Admin Setup (Robust Version)
 // ===============================
-if (!admin.apps.length) {
-    admin.initializeApp({
-        credential: admin.credential.cert({
-            projectId: process.env.FIREBASE_PROJECT_ID,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY
-                ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n")
-                : undefined
-        })
-    });
+try {
+    if (!admin.apps.length) {
+        if (!process.env.FIREBASE_PRIVATE_KEY) {
+            console.error("CRITICAL ERROR: FIREBASE_PRIVATE_KEY is missing!");
+        }
+        
+        admin.initializeApp({
+            credential: admin.credential.cert({
+                projectId: process.env.FIREBASE_PROJECT_ID,
+                clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+                // معالجة ذكية للمفتاح الخاص لمنع الأخطاء
+                privateKey: process.env.FIREBASE_PRIVATE_KEY 
+                    ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/"/g, '') 
+                    : undefined
+            })
+        });
+        console.log("Firebase Admin Initialized Successfully ✅");
+    }
+} catch (error) {
+    console.error("Firebase Initialization Failed ❌:", error.message);
 }
+
 const db = admin.firestore();
 
 // ===============================
